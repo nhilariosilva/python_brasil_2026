@@ -1,0 +1,17 @@
+# Pycache directory
+__pycache__/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+.Rhistory
+
+venv/
+env/
+
+# Python packaging
+*.egg-info/
+build/
+dist/
+
+*.tar.gz
