@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thetaflow - Predição de Idade</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 10px;
+            text-align: center;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            max-width: 400px;
+            width: 100%;
+        }
+        h2 { color: #0072B9; margin-top: 0; }
+        
+        #camera-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 300px;
+            aspect-ratio: 1 / 1; 
+            margin: 0 auto;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+        }
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; 
+            transform: scaleX(-1); 
+        }
+        #overlay-molde {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(ellipse 60% 70% at 50% 50%, rgba(0,0,0,0) 40%, rgba(0,0,0,0.7) 100%);
+            border: 2px dashed rgba(255, 255, 255, 0.5);
+            pointer-events: none; 
+        }
+        
+        .btn-acao {
+            background-color: #0072B9;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 15px;
+            font-weight: bold;
+        }
+        .btn-acao:active { background-color: #005a93; }
+        .btn-secundario { background-color: #6c757d; margin-top: 10px; }
+        .btn-secundario:active { background-color: #5a6268; }
+
+        #loading, #result { display: none; margin-top: 20px; }
+        #loading img { width: 50px; }
+        #result {
+            text-align: left; background: #f9f9f9; padding: 15px;
+            border-radius: 8px; border-left: 5px solid #0072B9;
+        }
+        #result-image { max-width: 100%; border-radius: 8px; margin-top: 15px; display: none; }
+        
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Qual a sua idade?</h2>
+        <p style="font-size: 14px; margin-bottom: 20px;">Encaixe seu rosto no molde e tire a foto!</p>
+
+        <!-- Container da Câmera -->
+        <div id="camera-wrapper">
+            <video id="video" autoplay playsinline></video>
+            <div id="overlay-molde"></div>
+        </div>
+
+        <button id="btn-capturar" class="btn-acao">Capturar Foto</button>
+        
+        <!-- NOVO: Botão e input para upload -->
+        <button id="btn-upload" class="btn-acao btn-secundario">Ou escolher da galeria</button>
+        <input type="file" id="imageInput" accept="image/*" style="display: none;">
+
+        <canvas id="canvas"></canvas>
+
+        <div id="loading">
+            <img src="https://i.gifer.com/ZZ5H.gif" alt="Carregando...">
+            <p>O Thetaflow está processando...</p>
+        </div>
+
+        <div id="result">
+            <h3 id="res-mensagem" style="text-align: center; margin-top:0;"></h3>
+            <p><b>Idade Estimada:</b> <span id="res-media"></span> anos</p>
+            <p><b>Desvio Padrão:</b> <span id="res-desvio"></span></p>
+            <p><b>Intervalo (95%):</b> De <span id="res-inf"></span> a <span id="res-sup"></span></p>
+            <img id="result-image" src="" alt="Gráfico de Densidade">
+            
+            <div id="feedback-section" style="margin-top: 20px; padding: 10px; background: #e8f4f8; border-radius: 8px;">
+                <h4 style="margin-top: 0;">O modelo acertou?</h4>
+                <input type="number" id="idade-real" placeholder="Idade real" style="padding: 8px; width: 80px;">
+                <button id="btn-enviar-feedback" style="padding: 8px 12px; background: #0072B9; color: white; border: none; cursor: pointer;">Enviar</button>
+                <p id="msg-agradecimento" style="display: none; color: green; font-weight: bold; margin-bottom: 0;">Dados salvos!</p>
+            </div>
+            
+            <button id="btn-tentar-novamente" class="btn-acao btn-secundario">Tentar com outra pessoa</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const cameraWrapper = document.getElementById('camera-wrapper');
+        const btnCapturar = document.getElementById('btn-capturar');
+        const btnUpload = document.getElementById('btn-upload');
+        const imageInput = document.getElementById('imageInput');
+        const loadingDiv = document.getElementById('loading');
+        const resultDiv = document.getElementById('result');
+        
+        let predicaoAtual = 0, predicaoLower = 0, predicaoUpper = 0;
+
+        // 1. Inicia a câmera
+        async function iniciarCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+                video.srcObject = stream;
+            } catch (err) {
+                alert("A câmera foi bloqueada pelo navegador. Para usar a câmera, certifique-se de acessar via HTTPS ou use o botão de upload de arquivo.");
+                // Esconde o quadrado preto da câmera já que ela falhou
+                cameraWrapper.style.display = 'none'; 
+                btnCapturar.style.display = 'none';
+            }
+        }
+        iniciarCamera();
+
+        // 2. Função unificada para enviar o blob gerado (da câmera ou da galeria) ao servidor
+        function processarEEnviarBlob(blob) {
+            cameraWrapper.style.display = 'none';
+            btnCapturar.style.display = 'none';
+            btnUpload.style.display = 'none';
+            loadingDiv.style.display = 'block';
+
+            const formData = new FormData();
+            formData.append('file', blob, 'rosto.jpg');
+
+            fetch('/predict', { method: 'POST', body: formData })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.erro) {
+                        alert(data.erro);
+                        voltarCamera();
+                    } else {
+                        predicaoAtual = parseFloat(data.media);
+                        predicaoLower = parseFloat(data.intervalo_inferior);
+                        predicaoUpper = parseFloat(data.intervalo_superior);
+
+                        document.getElementById('res-mensagem').innerText = data.mensagem;
+                        document.getElementById('res-media').innerText = predicaoAtual.toFixed(1);
+                        document.getElementById('res-desvio').innerText = parseFloat(data.desvio_padrao).toFixed(2);
+                        document.getElementById('res-inf').innerText = predicaoLower.toFixed(1);
+                        document.getElementById('res-sup').innerText = predicaoUpper.toFixed(1);
+
+                        if(data.imagem_base64) {
+                            const imgTag = document.getElementById('result-image');
+                            imgTag.src = "data:image/png;base64," + data.imagem_base64;
+                            imgTag.style.display = 'block';
+                        }
+
+                        document.getElementById('feedback-section').style.display = 'block';
+                        document.getElementById('idade-real').style.display = 'inline-block';
+                        document.getElementById('btn-enviar-feedback').style.display = 'inline-block';
+                        document.getElementById('msg-agradecimento').style.display = 'none';
+                        document.getElementById('idade-real').value = '';
+
+                        loadingDiv.style.display = 'none';
+                        resultDiv.style.display = 'block';
+                    }
+                })
+                .catch(error => {
+                    alert("Erro ao conectar com o servidor.");
+                    voltarCamera();
+                });
+        }
+
+        // 3. Captura da Câmera
+        btnCapturar.addEventListener('click', () => {
+            if (!video.videoWidth) return;
+            const ctx = canvas.getContext('2d');
+            const size = Math.min(video.videoWidth, video.videoHeight);
+            const startX = (video.videoWidth - size) / 2;
+            const startY = (video.videoHeight - size) / 2;
+
+            canvas.width = 200;
+            canvas.height = 200;
+
+            // Espelha a imagem da câmera antes de desenhar
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, startX, startY, size, size, 0, 0, 200, 200);
+
+            canvas.toBlob(processarEEnviarBlob, 'image/jpeg', 0.95);
+        });
+
+        // 4. Captura do Upload da Galeria
+        btnUpload.addEventListener('click', () => imageInput.click());
+        
+        imageInput.addEventListener('change', function() {
+            if (!this.files || this.files.length === 0) return;
+            
+            const file = this.files[0];
+            const imgUrl = URL.createObjectURL(file);
+            const imgObj = new Image();
+            
+            imgObj.onload = () => {
+                const ctx = canvas.getContext('2d');
+                const size = Math.min(imgObj.width, imgObj.height);
+                const startX = (imgObj.width - size) / 2;
+                const startY = (imgObj.height - size) / 2;
+
+                canvas.width = 200;
+                canvas.height = 200;
+
+                // Garante que não há efeito espelho nas fotos enviadas
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                
+                // Corta o centro da imagem enviada e joga para 200x200
+                ctx.drawImage(imgObj, startX, startY, size, size, 0, 0, 200, 200);
+
+                canvas.toBlob(processarEEnviarBlob, 'image/jpeg', 0.95);
+                URL.revokeObjectURL(imgUrl); // Libera memória
+            };
+            imgObj.src = imgUrl;
+        });
+
+        function voltarCamera() {
+            resultDiv.style.display = 'none';
+            loadingDiv.style.display = 'none';
+            cameraWrapper.style.display = 'block';
+            btnCapturar.style.display = 'block';
+            btnUpload.style.display = 'block';
+            imageInput.value = ''; // Reseta input
+        }
+
+        document.getElementById('btn-tentar-novamente').addEventListener('click', voltarCamera);
+
+        // Feedback
+        document.getElementById('btn-enviar-feedback').addEventListener('click', async function() {
+            const idadeReal = document.getElementById('idade-real').value;
+            if (!idadeReal) return alert("Insira sua idade real.");
+            try {
+                const res = await fetch('/feedback', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idade_predita: predicaoAtual, idade_real: parseFloat(idadeReal), idade_predita_lower: predicaoLower, idade_predita_upper: predicaoUpper })
+                });
+                if (res.ok) {
+                    document.getElementById('idade-real').style.display = 'none';
+                    this.style.display = 'none';
+                    document.getElementById('msg-agradecimento').style.display = 'block';
+                }
+            } catch (error) { alert("Erro de conexão."); }
+        });
+    </script>
+</body>
+</html>
