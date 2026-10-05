@@ -94,6 +94,10 @@
         <button id="btn-upload" class="btn-acao btn-secundario">Ou escolher da galeria</button>
         <input type="file" id="imageInput" accept="image/*" style="display: none;">
 
+        <div style="font-size: 11px; color: #666; margin-top: 20px; padding: 10px; border-top: 1px solid #ddd; text-align: justify;">
+            <b>Aviso de Privacidade (LGPD):</b> Nenhuma foto é salva no nosso servidor. A sua imagem é processada temporariamente em memória para a inferência da rede neural e descartada no mesmo segundo. Caso você opte por enviar o feedback, apenas os números (sua idade real e a predição) serão armazenados de forma 100% anônima para a validação estatística apresentada neste congresso. Ao utilizar, você concorda com este processamento.
+        </div>
+        
         <canvas id="canvas"></canvas>
 
         <div id="loading">
@@ -105,7 +109,7 @@
             <h3 id="res-mensagem" style="text-align: center; margin-top:0;"></h3>
             <p><b>Idade Estimada:</b> <span id="res-media"></span> anos</p>
             <p><b>Desvio Padrão:</b> <span id="res-desvio"></span></p>
-            <p><b>Intervalo (95%):</b> De <span id="res-inf"></span> a <span id="res-sup"></span></p>
+            <p><b>Intervalo (1-sigma):</b> De <span id="res-inf"></span> a <span id="res-sup"></span></p>
             <img id="result-image" src="" alt="Gráfico de Densidade">
             
             <div id="feedback-section" style="margin-top: 20px; padding: 10px; background: #e8f4f8; border-radius: 8px;">

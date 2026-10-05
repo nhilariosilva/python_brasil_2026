@@ -5,6 +5,7 @@ import uvicorn
 import io
 import base64
 import cv2
+from mtcnn import MTCNN
 import numpy as np
 
 from pydantic import BaseModel
@@ -62,8 +63,18 @@ import gndr_utils as utils
 
 app = FastAPI()
 
+# Detector de rostos MTCNN
+detector = MTCNN()
+
 # Dicionário global para os modelos carregados
 ml_models = {}
+
+# Comprimento dos intervalos - Considerando o intervalo 1-sigma da normal
+# Para aplicações mais rigorosas, o ideal é considerar 2-sigma (em torno de 95% de confiança para a idade)
+# q1 = 0.025
+q1 = norm.cdf(-1)
+# q2 = 0.975
+q2 = norm.cdf(1)
 
 def build_utkface_model( dropout_rate = 0.3 ):
     tn_parameters = {
@@ -165,7 +176,7 @@ def log_tn_lower_quantile(model, nn_output, data):
     alpha = norm_dist.cdf(-mu / sigma)
     
     # Adjust the 2.5% target for the [0, inf] truncation
-    p_target = 0.025
+    p_target = q1
     adjusted_p = alpha + p_target * (1.0 - alpha)
     
     # Clip the probability slightly inside [0, 1] 
@@ -186,7 +197,7 @@ def log_tn_upper_quantile(model, nn_output, data):
     
     alpha = norm_dist.cdf(-mu / sigma)
     
-    p_target = 0.975
+    p_target = q2
     adjusted_p = alpha + p_target * (1.0 - alpha)
     
     adjusted_p_safe = tf.clip_by_value(adjusted_p, 1e-7, 1.0 - 1e-7)
@@ -195,15 +206,61 @@ def log_tn_upper_quantile(model, nn_output, data):
     return tf.math.log(q_975)
 
 def process_and_crop_face(image_bytes):
-    # Converte os bytes recebidos via HTTP para uma matriz do OpenCV
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (200, 200))
-    # Normalização exigida pela MobileNetV2: [-1, 1]
-    img = (img.astype('float32') / 127.5) - 1.0
-    return img
+    img_tf = tf.image.decode_jpeg(image_bytes, channels=3)
+    img_np = img_tf.numpy()
+    
+    resultados = detector.detect_faces(img_np)
+    
+    if len(resultados) == 0:
+        return None
 
+    rosto_principal = max(resultados, key=lambda b: b['confidence'])
+    x, y, width, height = rosto_principal['box']
+
+    # Previne valores negativos do MTCNN
+    x, y = max(0, x), max(0, y)
+
+    # Encontra o centro exato do rosto
+    centro_x = x + width // 2
+    centro_y = y + height // 2
+    
+    # Transforma em quadrado pegando a maior dimensão
+    lado_maximo = max(width, height)
+    
+    # Multiplica por 1.6 para dar margem (afastar o zoom)
+    fator_margem = 1.6
+    tamanho_quadrado = int(lado_maximo * fator_margem)
+    
+    # 4. Calcula as novas coordenadas X, Y do topo superior esquerdo
+    novo_x = centro_x - (tamanho_quadrado // 2)
+    novo_y = centro_y - (tamanho_quadrado // 2)
+    
+    # 5. Garante que o recorte não vai pedir pixels fora da foto (padding natural)
+    img_height, img_width, _ = img_np.shape
+    x1 = max(0, novo_x)
+    y1 = max(0, novo_y)
+    x2 = min(img_width, novo_x + tamanho_quadrado)
+    y2 = min(img_height, novo_y + tamanho_quadrado)
+    
+    largura_corte = x2 - x1
+    altura_corte = y2 - y1
+
+    # Recorta usando TensorFlow
+    pic_crop = tf.image.crop_to_bounding_box(
+        img_tf, 
+        offset_height=y1, 
+        offset_width=x1, 
+        target_height=altura_corte, 
+        target_width=largura_corte
+    )
+
+    pic_resize = tf.image.resize(pic_crop, [200, 200])
+
+    pic_normalized = tf.cast(pic_resize, tf.float32)
+    pic_normalized = (pic_normalized / 127.5) - 1.0
+    
+    return pic_normalized
+    
 def predict_age(img):
     alpha = 0.05
     z_norm = norm.ppf(1-alpha/2)
@@ -231,8 +288,8 @@ def predict_age(img):
     sigma_pred = img_pred["sigma"]
 
     tnorm_dist_test = tfp.distributions.TruncatedNormal(loc = mu_pred, scale = sigma_pred, low = 0.0, high = np.inf)
-    img_lower_quantile_hat = np.log( tnorm_dist_test.quantile( 0.025 ) )
-    img_upper_quantile_hat = np.log( tnorm_dist_test.quantile( 0.975 ) )
+    img_lower_quantile_hat = np.log( tnorm_dist_test.quantile( q1 ) )
+    img_upper_quantile_hat = np.log( tnorm_dist_test.quantile( q2 ) )
     
     img_lower_log_tn_lower_quantile = img_lower_quantile_hat - np.sqrt(img_lower_quantile) * z_norm
     img_upper_log_tn_upper_quantile = img_upper_quantile_hat + np.sqrt(img_upper_quantile) * z_norm
@@ -240,7 +297,7 @@ def predict_age(img):
     img_upper_tn_upper_quantile = np.exp( img_upper_log_tn_upper_quantile )
     
     return mu_pred, sigma_pred, img_lower_tn_lower_quantile, img_upper_tn_upper_quantile
-
+    
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -304,7 +361,7 @@ async def predict(file: UploadFile = File(...)):
 
     print("img shape", img.shape)
 
-    img_plot = (img - img.min()) / (img.max() - img.min())
+    img_plot = (img - tf.math.reduce_min(img)) / (tf.math.reduce_max(img) - tf.math.reduce_min(img))
     
     ax[0].imshow( img_plot )
     ax[0].axis('off')

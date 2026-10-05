@@ -2,3 +2,4 @@ idade_predita,idade_real,erro_absoluto,limite_inferior,limite_superior,dentro_do
 29.47,26.0,3.47,13.03,46.12,1
 36.3,55.0,18.7,18.42,54.35,0
 29.01,55.0,25.99,10.71,47.64,0
+19.04,25.0,5.96,10.89,27.75,1
